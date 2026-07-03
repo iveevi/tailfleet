@@ -14,18 +14,33 @@ Live hardware monitor and remote job runner for the Linux machines on your Tails
 uv tool install .        # or: uv run tailfleet
 ```
 
+## Status
+
+```sh
+tailfleet                # equivalent to: tailfleet status
+```
+
+A one-shot `nvidia-smi`-style table of every online Linux node on the tailnet, rendered in your terminal's ANSI palette. One node per two-line entry, four column groups:
+
+- **Node** — hostname; the local node's name is *italicized*
+- **CPU** — model, then temp · util (bar gauge) · cores/threads · clock
+- **Memory** — used / total and a util bar
+- **GPU** — name, then temp · util (bar) · VRAM used/total (bar)
+
+Utilization is band-colored (green < 40% < yellow < 80% < red). VRAM is reported for NVIDIA (`nvidia-smi`) and for shared-memory Intel iGPUs (`gputop`, counted against system RAM). CPU temp comes from `thermal_zone`/`hwmon`.
+
+Flag: `--timeout` (per-node probe seconds, default 20).
+
 ## Monitor
 
 ```sh
-tailfleet                # equivalent to: tailfleet monitor
+tailfleet monitor
 ```
 
-A full-screen dashboard of every online Linux node on the tailnet, rendered in your terminal's ANSI palette:
+The same table, live-refreshing in place at the top of the screen:
 
-- one column per node: CPU / RAM / GPU / VRAM gauges with scrolling utilization graphs
-- `←`/`→` pages through nodes, `q` quits
-- top statusbar: fleet size, nodes up, page position
-- bottom ticker: one-line stats for all nodes, always visible regardless of page
+- `-` faster, `+` slower (refresh rate shown as `⟳ Ns` in the header), `q` quits
+- header also shows the current time and nodes-up count
 
 Flags: `--interval` (refresh seconds, default 1), `--rediscover` (re-scan tailnet, default 15), `--timeout` (per-node probe, default 20).
 
@@ -75,8 +90,8 @@ tailfleet sync                # push only, no dispatch
 ```
 tailfleet/
   cli.py      argparse subcommands, entry point
-  monitor.py  Textual dashboard app
-  render.py   gauges, sparklines, ticker
+  monitor.py  Textual live-table app
+  render.py   fleet table, bar gauges, alignment
   nodes.py    tailnet discovery, remote exec
   probes.py   shell probes piped to bash -s
   parse.py    probe output parsing, parallel gather

@@ -8,10 +8,13 @@ def build_parser():
     ap = argparse.ArgumentParser(prog="tailfleet", description="tailnet live monitor and job runner")
     sub = ap.add_subparsers(dest="cmd")
 
-    m = sub.add_parser("monitor", help="live fleet dashboard (default)")
+    m = sub.add_parser("monitor", help="live fleet dashboard")
     m.add_argument("--interval", type=float, default=1, help="seconds between refreshes (default 1)")
     m.add_argument("--rediscover", type=float, default=15, help="seconds between tailnet re-discovery (default 15)")
     m.add_argument("--timeout", type=float, default=20, help="per-node probe timeout seconds (default 20)")
+
+    t = sub.add_parser("status", help="one-shot fleet table (default)")
+    t.add_argument("--timeout", type=float, default=20, help="per-node probe timeout seconds (default 20)")
 
     sub.add_parser("sync", help="push whitelisted files to all routine nodes")
     sub.add_parser("pull", help="fetch pull-globs back from all routine nodes")
@@ -33,12 +36,22 @@ def build_parser():
 def main():
     argv = sys.argv[1:]
     if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
-        argv = ["monitor", *argv]
+        argv = ["status", *argv]
     args = build_parser().parse_args(argv)
 
     if args.cmd == "monitor":
         from .monitor import MonitorApp
         MonitorApp(args.interval, args.rediscover, args.timeout).run()
+        return
+
+    if args.cmd == "status":
+        from .nodes import all_nodes
+        from .parse import gather_monitor
+        from .render import print_snapshot
+        nodes = sorted(all_nodes(), key=lambda n: (not n["self"], n["host"] or ""))
+        results = sorted(gather_monitor(nodes, {}, args.timeout),
+                         key=lambda r: (not r["self"], r["host"] or ""))
+        print_snapshot(results)
         return
 
     from . import jobs

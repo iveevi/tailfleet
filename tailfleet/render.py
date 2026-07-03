@@ -1,6 +1,7 @@
 """Per-node card rendering: slim inline gauges + plotext sparklines."""
 
 import re
+from datetime import datetime
 
 import plotext as plt
 from rich.text import Text
@@ -97,32 +98,6 @@ def _fmtpct(pct):
         return "?"
 
 
-def ticker_line(results, ncolor):
-    t = Text()
-    for r in results:
-        if len(t):
-            t.append("  │  ", style="dim")
-        host = r["host"] or "?"
-        ok = r["status"] == "ok"
-        t.append("● ", style="green" if ok else "red")
-        t.append(host + " ", style=f"bold {ncolor.get(host, 'white')}")
-        if not ok:
-            t.append(r["status"], style="red")
-            continue
-        for label, val in (("cpu", r.get("CPU_UTIL")), ("ram", mem_pct(r))):
-            t.append(label + " ", style="dim")
-            t.append(_fmtpct(val) + " ", style=_band(val))
-        g = next((x for x in (r.get("GPUS") or []) if "util" in x), None)
-        if g is not None:
-            t.append("gpu ", style="dim")
-            t.append(_fmtpct(g["util"]), style=_band(g["util"]))
-            vp = vram_pct(g)
-            if vp is not None:
-                t.append(" vram ", style="dim")
-                t.append(_fmtpct(vp), style=_band(vp))
-    return t
-
-
 BANDS = [(0, 40, 2), (40, 80, 3), (80, float("inf"), 1)]
 
 
@@ -176,7 +151,29 @@ def gauge_line(label, pct, detail, width):
     return t
 
 
-def node_body(r, hist, width, graph_h=3):
+def _gpu_name(gpus):
+    if not gpus:
+        return "none", ""
+    g = next((x for x in gpus if "util" in x), gpus[0])
+    stats = " · ".join(filter(None, [
+        f"{g['freq']}MHz" if "freq" in g else "",
+        f"{g['temp']}C" if "temp" in g else "",
+    ]))
+    return gname(g), stats
+
+
+def _name_line(name, stats, width):
+    if not stats:
+        return name if len(name) <= width else name[:max(1, width - 1)] + "…"
+    room = width - len(stats) - 3
+    if room < 4:
+        line = "· " + stats
+        return line if len(line) <= width else line[:max(1, width - 1)] + "…"
+    n = name if len(name) <= room else name[:room - 1] + "…"
+    return f"{n} · {stats}"
+
+
+def node_body(r, hist, width, section_h=6):
     t = Text()
 
     def clip(s):
@@ -188,43 +185,253 @@ def node_body(r, hist, width, graph_h=3):
             t.append(clip(r["error"]), style="dim")
         return t
 
-    def spark(key):
+    gpus = r.get("GPUS") or []
+    g = next((x for x in gpus if "util" in x), None)
+    vp = next((vram_pct(x) for x in gpus if vram_pct(x) is not None), None)
+    vd = next((vram(x) for x in gpus if vram_pct(x) is not None), None)
+
+    cpu_stats = f"{r.get('CORES', '?')}c/{r.get('THREADS', '?')}t · {ghz(r)}"
+    cpu_model = str(r.get("CPU_MODEL") or "").strip() or "CPU"
+    gpu_model, gpu_stats = _gpu_name(gpus)
+    sections = [
+        ("CPU", r.get("CPU_UTIL"), None, (cpu_model, cpu_stats), "cpu"),
+        ("RAM", mem_pct(r), mem_col(r), None, "mem"),
+        ("GPU", g["util"] if g else None, None, (gpu_model, gpu_stats), "gpu"),
+        ("VRAM", vp, vd, None, "vram"),
+    ]
+
+    spark_h = max(1, section_h - 2)
+    for i, (label, pct, detail, name, key) in enumerate(sections):
+        if i:
+            t.append("─" * width + "\n", style="bright_black")
+        if name:
+            t.append(_name_line(name[0], name[1], width) + "\n", style="dim")
+        t.append_text(gauge_line(label, pct, detail, width))
+        sh = max(1, spark_h - 1) if name else spark_h
         h = (hist.get(r["host"]) or {}).get(key) if hist else None
         if h:
-            t.append_text(Text.from_ansi(plotext_graph(h, width, graph_h)))
+            t.append_text(Text.from_ansi(plotext_graph(h, width, sh)))
             t.append("\n")
-
-    t.append(clip(str(r.get("CPU_MODEL", "?"))) + "\n", style="dim")
-
-    t.append_text(gauge_line("CPU", r.get("CPU_UTIL"),
-                             f"{r.get('CORES', '?')}c/{r.get('THREADS', '?')}t · {ghz(r)}", width))
-    spark("cpu")
-
-    t.append_text(gauge_line("RAM", mem_pct(r), mem_col(r), width))
-    spark("mem")
-
-    gpus = r.get("GPUS") or []
-    if not gpus:
-        t.append(f"{'GPU':<{LABEL_W}}", style="bold")
-        t.append("none\n", style="dim")
-    for g in gpus:
-        extra = " · ".join(filter(None, [
-            f"{g['freq']}MHz" if "freq" in g else "",
-            f"{g['temp']}C" if "temp" in g else "",
-        ]))
-        d = gname(g) + (f" · {extra}" if extra else "")
-        if "util" in g:
-            t.append_text(gauge_line("GPU", g["util"], d, width))
         else:
-            t.append(f"{'GPU':<{LABEL_W}}", style="bold")
-            t.append(clip(d + " · no stats") + "\n", style="dim")
-    spark("gpu")
-
-    vp = next((vram_pct(g) for g in gpus if vram_pct(g) is not None), None)
-    if vp is not None:
-        vd = next((vram(g) for g in gpus if vram_pct(g) is not None), None)
-        t.append_text(gauge_line("VRAM", vp, vd, width))
-        spark("vram")
+            t.append("\n" * sh)
 
     t.rstrip()
     return t
+
+
+def _cpu_temp(r):
+    try:
+        return f"{round(int(r['CPU_TEMP']) / 1000)}C"
+    except (KeyError, TypeError, ValueError):
+        return ""
+
+
+def _cpu_model(r):
+    m = str(r.get("CPU_MODEL") or "").strip()
+    if not m:
+        return "CPU"
+    m = re.sub(r"\((R|TM|r|tm)\)", "", m)
+    m = re.sub(r"\s+@.*$", "", m)
+    m = re.sub(r"\s+\d+-Core\b", "", m)
+    m = re.sub(r"\b\d+th Gen\s+", "", m)
+    m = m.replace(" CPU", "").replace(" Processor", "").replace(" Core", "")
+    return re.sub(r"\s+", " ", m).strip() or "CPU"
+
+
+_COL_N = 9
+_COL_A = 40
+_COL_B = 22
+_COL_C = 46
+_BORDER = "bright_black"
+_LABEL = "bright_black"
+_DIM = "bright_black"
+
+
+def _clip(s, w):
+    s = str(s)
+    return s if len(s) <= w else s[:max(1, w - 1)] + "…"
+
+
+def _mem_aligned(r):
+    try:
+        used = int(r["MEM_USED_KB"]) / 1024 / 1024
+        total = int(r["MEM_KB"]) / 1024 / 1024
+        return f"{used:>4.1f} / {total:>4.1f}G"
+    except (KeyError, TypeError, ValueError):
+        return fmt_mem(r.get("MEM_KB"))
+
+
+def _vram_aligned(g):
+    if not g:
+        return f"{'-':>5} / {'':<5}"
+    try:
+        used = int(g["mem_used"]) / 1024
+        total = int(g["mem_total"]) / 1024
+        return f"{used:>4.1f} / {total:>4.1f}G"
+    except (KeyError, TypeError, ValueError):
+        return f"{'-':>5} / {'':<5}"
+
+
+def _cell(width, *segs):
+    t = Text()
+    for s, st in segs:
+        if isinstance(s, Text):
+            t.append_text(s)
+        else:
+            t.append(s, style=st or "")
+    if t.cell_len > width:
+        t = t[:width]
+    if t.cell_len < width:
+        t.append(" " * (width - t.cell_len))
+    return t
+
+
+def _bar(pct, w):
+    t = Text()
+    try:
+        p = max(0.0, min(100.0, float(pct)))
+    except (TypeError, ValueError):
+        return _cell(w, ("░" * w, _DIM))
+    n = round(p / 100 * w)
+    t.append("█" * n, style=_band(pct))
+    t.append("░" * (w - n), style=_DIM)
+    return t
+
+
+def _rule(left, mid, right, ch, cols):
+    n, a, b, c = cols
+    return Text(left + ch * (n + 2) + mid + ch * (a + 2) + mid
+                + ch * (b + 2) + mid + ch * (c + 2) + right, style=_BORDER)
+
+
+def _row(cn, ca, cb, cc):
+    t = Text()
+    for cell in (cn, ca, cb, cc):
+        t.append("│ ", style=_BORDER)
+        t.append_text(cell)
+        t.append(" ", style=_BORDER)
+    t.append("│", style=_BORDER)
+    return t
+
+
+def _cols_for(width):
+    n, b = _COL_N, _COL_B
+    remaining = max(_COL_A + _COL_C, width - (n + b + 13))
+    a = max(_COL_A, int(remaining * 0.42))
+    c = max(_COL_C, remaining - a)
+    return n, a, b, c
+
+
+def snapshot_text(results, width=116, interval=None):
+    ncolor, _ = palette_for([r["host"] for r in results])
+    cols = _cols_for(width)
+    n, ca, cb, cc = cols
+    inner = n + ca + cb + cc + 9
+    up = sum(1 for r in results if r["status"] == "ok")
+
+    clock = datetime.now().strftime("%H:%M:%S")
+    updown = f"{up}/{len(results)} up"
+    rate = f"⟳ {interval:g}s" if interval else ""
+    right_plain = f"{(rate + '    ') if rate else ''}{clock}    {updown}"
+    title = Text()
+    title.append("│ ", style=_BORDER)
+    title.append("tailfleet", style="bold white")
+    title.append(" " * max(1, inner - len("tailfleet") - len(right_plain)))
+    if rate:
+        title.append(rate, style=_LABEL)
+        title.append("    ")
+    title.append(clock, style=_LABEL)
+    title.append("    ")
+    title.append(updown, style="green" if up == len(results) else "yellow")
+    title.append(" │", style=_BORDER)
+
+    lines = [
+        _rule("╭", "─", "╮", "─", cols),
+        title,
+        _rule("├", "┬", "┤", "─", cols),
+        _row(_cell(n, ("Node", _LABEL)),
+             _cell(ca, ("CPU", _LABEL)),
+             _cell(cb, ("Memory-Usage", _LABEL)),
+             _cell(cc, ("GPU   Name", _LABEL))),
+        _row(_cell(n, ("", _LABEL)),
+             _cell(ca, ("Temp   Util   Cores · Clock", _LABEL)),
+             _cell(cb, ("Used / Total", _LABEL)),
+             _cell(cc, ("Temp   GPU-Util · VRAM-Usage", _LABEL))),
+        _rule("╞", "╪", "╡", "═", cols),
+    ]
+
+    for i, r in enumerate(results):
+        host = r["host"] or "?"
+        acc = ncolor.get(host, "white")
+        is_self = bool(r.get("self"))
+
+        if r["status"] != "ok":
+            n1 = _node_cell(host, _DIM, is_self, n)
+            lines.append(_row(n1, _cell(ca, (_clip(r.get("status") or "?", ca), _DIM)),
+                              _cell(cb), _cell(cc)))
+            lines.append(_row(_cell(n), _cell(ca), _cell(cb), _cell(cc)))
+            if i < len(results) - 1:
+                lines.append(_rule("├", "┼", "┤", "─", cols))
+            continue
+
+        n1 = _node_cell(host, f"bold {acc}", is_self, n)
+        n2 = _cell(n)
+
+        gpus = r.get("GPUS") or []
+        g = next((x for x in gpus if "util" in x), None)
+        gv = next((x for x in gpus if vram_pct(x) is not None), None)
+        vp = vram_pct(gv) if gv else None
+        gm, _ = _gpu_name(gpus)
+        temp = next((f"{x['temp']}C" for x in gpus if "temp" in x), "")
+        cu, gu = r.get("CPU_UTIL"), (g["util"] if g else None)
+
+        ct = _cpu_temp(r)
+        cores = f"{str(r.get('CORES', '?')):>2}c/{str(r.get('THREADS', '?')):>2}t · {ghz(r):>6}"
+        a1 = _cell(ca, (_clip(_cpu_model(r), ca), "default"))
+        a2 = _cell(ca,
+                   (ct.rjust(4), _LABEL), ("  ", ""),
+                   (_fmtpct(cu).rjust(4), _band(cu)), ("  ", ""), *_seg_pair(_bar(cu, 8)),
+                   ("  ", ""), (cores, _LABEL))
+        b1 = _cell(cb, (_mem_aligned(r), "default"))
+        b2 = _cell(cb, (_fmtpct(mem_pct(r)).rjust(4), _band(mem_pct(r))),
+                   ("  ", ""), *_seg_pair(_bar(mem_pct(r), 8)))
+        c1 = _cell(cc, (_clip(gm, cc), "default"))
+        c2 = _cell(cc,
+                   (temp.rjust(4), _LABEL), ("  ", ""),
+                   *_seg_pair(_bar(gu, 6)), (_fmtpct(gu).rjust(4), _band(gu)),
+                   ("  ", ""), (_vram_aligned(gv), _LABEL), (" ", ""),
+                   *_seg_pair(_bar(vp, 6)), (_fmtpct(vp).rjust(4), _band(vp)))
+
+        lines.append(_row(n1, a1, b1, c1))
+        lines.append(_row(n2, a2, b2, c2))
+        if i < len(results) - 1:
+            lines.append(_rule("├", "┼", "┤", "─", cols))
+
+    lines.append(_rule("╰", "┴", "╯", "─", cols))
+
+    out = Text()
+    for j, ln in enumerate(lines):
+        if j:
+            out.append("\n")
+        out.append_text(ln)
+    return out
+
+
+def _seg_pair(text):
+    return [(text, None)]
+
+
+def _node_cell(host, name_style, is_self, width):
+    t = Text()
+    style = f"{name_style} italic" if is_self else name_style
+    t.append(_clip(host, width), style=style)
+    if t.cell_len < width:
+        t.append(" " * (width - t.cell_len))
+    return t
+
+
+def print_snapshot(results):
+    from rich.console import Console
+
+    con = Console(highlight=False)
+    con.print(snapshot_text(results, con.width), soft_wrap=True)

@@ -28,6 +28,26 @@ cpu_sample() { awk '/^cpu /{idle=$5+$6; tot=0; for(i=2;i<=NF;i++) tot+=$i; print
 read t1 i1 < <(cpu_sample); sleep 0.1; read t2 i2 < <(cpu_sample)
 emit CPU_UTIL    "$(awk -v t1=$t1 -v i1=$i1 -v t2=$t2 -v i2=$i2 'BEGIN{dt=t2-t1;di=i2-i1; if(dt>0) printf "%.0f",(1-di/dt)*100; else printf "0"}')"
 emit MEM_USED_KB "$(awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print t-a}' /proc/meminfo)"
+cput=""
+for z in /sys/class/thermal/thermal_zone*; do
+  ty="$(cat "$z/type" 2>/dev/null)"
+  case "$ty" in x86_pkg_temp|cpu_thermal|*coretemp*) cput="$(cat "$z/temp" 2>/dev/null)"; break;; esac
+done
+if [ -z "$cput" ]; then
+  for h in /sys/class/hwmon/hwmon*; do
+    case "$(cat "$h/name" 2>/dev/null)" in
+      coretemp|k10temp|zenpower)
+        for f in "$h"/temp*_label; do
+          case "$(cat "$f" 2>/dev/null)" in
+            Tctl|Tdie|Package*|*Package*) cput="$(cat "${f%_label}_input" 2>/dev/null)"; break;;
+          esac
+        done
+        [ -z "$cput" ] && cput="$(cat "$h/temp1_input" 2>/dev/null)"
+        [ -n "$cput" ] && break;;
+    esac
+  done
+fi
+[ -n "$cput" ] && emit CPU_TEMP "$cput"
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi --query-gpu=memory.used,utilization.gpu,temperature.gpu \
     --format=csv,noheader,nounits 2>/dev/null | while IFS= read -r line; do

@@ -37,6 +37,14 @@ def monitor_probe_one(node, cache, timeout):
         cache[node["host"]] = cached
     merged = {**cached["scalars"], **info}
     gpus = merge_gpus(cached["gpus"], gdyn)
+    try:
+        ram_mib = int(merged["MEM_KB"]) // 1024
+    except (KeyError, TypeError, ValueError):
+        ram_mib = None
+    if ram_mib:
+        for g in gpus:
+            if "mem_used" in g and "mem_total" not in g:
+                g["mem_total"] = str(ram_mib)
     return {**node, "status": "ok", "GPUS": gpus, **merged}
 
 
@@ -104,6 +112,14 @@ def parse_intel(b64):
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
+_SZ = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+
+
+def _parse_size(tok):
+    m = re.fullmatch(r"([\d.]+)([BKMGT])i?B?", tok)
+    return float(m.group(1)) * _SZ[m.group(2)] if m else None
+
+
 def parse_gputop(b64):
     try:
         raw = base64.b64decode(b64).decode(errors="replace")
@@ -132,6 +148,17 @@ def parse_gputop(b64):
     d = {"util": str(round(best[0]))}
     if best[1]:
         d["freq"] = best[1]
+    mem_bytes = 0.0
+    for line in last.splitlines():
+        if "|" not in line:
+            continue
+        left = line.split("|", 1)[0].split()
+        if len(left) >= 2 and left[0].isdigit():
+            sz = _parse_size(left[1])
+            if sz:
+                mem_bytes += sz
+    if mem_bytes > 0:
+        d["mem_used"] = str(round(mem_bytes / 1024 / 1024))
     return d
 
 
