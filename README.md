@@ -1,81 +1,85 @@
 # tailfleet
 
-Hardware inventory and job control across your Tailscale network. One file, no
-install. Discovers online Linux nodes via `tailscale status`, probes them over
-SSH, and runs tracked jobs with directory sync.
+Live hardware monitor and remote job runner for the Linux machines on your Tailscale network. No agents, no daemons: everything runs over `tailscale status` + SSH, with state kept in plain files under `~/.tailfleet/` on each node.
 
 ## Requirements
 
-- `tailscale` (nodes discovered from `tailscale status --json`)
-- `ssh` and `rsync` for remote nodes
-- `uv` (the script self-installs `rich` + `textual` via its inline metadata)
-- Key-based SSH to each node (`BatchMode=yes`; no password prompts)
+- `tailscale` CLI on the host; SSH access to peers (Tailscale SSH or plain keys)
+- `bash` and `rsync` on host and nodes
+- `nvidia-smi`, `intel_gpu_top`, or `gputop` on nodes for GPU stats (optional)
 
-## Usage
+## Install
 
-```
-./tailfleet.py [--json] [--timeout SECS] <command>
-```
-
-Run with no command to print the hardware inventory table.
-
-### Commands
-
-| Command | Description |
-| --- | --- |
-| `(none)` | Inventory table: CPU, RAM, GPU, util, temp per node |
-| `monitor` | Live-refreshing table with braille usage graphs + running jobs |
-| `run <node> <dir> -- <cmd>` | Sync `dir` to the node, run `cmd` as a tracked job, tail it, pull results back |
-| `exec <node> -- <cmd>` | One-off command on a node (no sync, no tracking) |
-| `sync <node> <dir>` | Rsync a directory to/from a node's workdir (no job) |
-| `jobs` | List jobs across the fleet |
-| `logs <id> [-f]` | Show (or follow) a job's log |
-| `fetch <id>` | Pull a job's results back into its origin dir |
-| `kill <id> [--force]` | Signal a running job's process group (TERM then KILL) |
-| `rm <id> [--force]` | Remove a job's marker/log |
-
-The local node is marked `*` in tables.
-
-## Examples
-
-```
-# inventory
-./tailfleet.py
-
-# live dashboard
-./tailfleet.py monitor
-
-# run a training job on node "renoir", stream output, auto-pull results
-./tailfleet.py run renoir ./project -- python train.py --epochs 10
-
-# detach and follow later
-./tailfleet.py run renoir ./project --detach -- python train.py
-./tailfleet.py logs renoir-1a2b3c -f
-./tailfleet.py fetch renoir-1a2b3c
-
-# one-off command, no sync
-./tailfleet.py exec renoir -- nvidia-smi
+```sh
+uv tool install .        # or: uv run tailfleet
 ```
 
-## How it works
+## Monitor
 
-- **Discovery**: `all_nodes()` reads `tailscale status --json` and keeps online
-  Linux peers plus self.
-- **Probing**: a shell snippet (`PROBE`) is piped to `bash -s` on each node in
-  parallel, emitting tab-separated CPU/RAM/GPU fields parsed back into a table.
-- **Jobs**: `run` rsyncs the directory to `~/.tailfleet/<project>` on the node,
-  launches the command under `setsid` with a PID/exit/log marker, then tails it.
-  Results rsync back on completion. Re-running an identical job (same dir+cmd)
-  is refused unless `--force`.
-- **Workdir**: each project maps to `~/.tailfleet/<basename>-<hash>` on the
-  node. Markers live in `~/.tailfleet/jobs/`. Exited markers older than 24h are
-  pruned automatically.
+```sh
+tailfleet                # equivalent to: tailfleet monitor
+```
 
-## Notes
+A full-screen dashboard of every online Linux node on the tailnet, rendered in your terminal's ANSI palette:
 
-- Push is additive by default. Pass `--mirror` for `rsync --delete`.
-- Pull keeps newer local files by default. Pass `--overwrite` to force.
-- Add a `.tailfleetignore` (gitignore-style) to a directory to extend the
-  default excludes (`.git`, `.venv`, `__pycache__`, `node_modules`, `*.pyc`).
-- Put PATH setup for `nvcc`/`uv`/`conda` in `~/.tailfleet/env` on a node; both
-  `run` and `exec` source it.
+- one column per node: CPU / RAM / GPU / VRAM gauges with scrolling utilization graphs
+- `←`/`→` pages through nodes, `q` quits
+- top statusbar: fleet size, nodes up, page position
+- bottom ticker: one-line stats for all nodes, always visible regardless of page
+
+Flags: `--interval` (refresh seconds, default 1), `--rediscover` (re-scan tailnet, default 15), `--timeout` (per-node probe, default 20).
+
+## Jobs
+
+Describe a workspace in a `tailfleet.yaml` at your project root:
+
+```yaml
+workspace: nanogpt            # remote dir name; defaults to the local dir basename
+push: [src/**/*.py, pyproject.toml, uv.lock]     # host → nodes
+pull: [out/**, logs/*.log]                       # nodes → host
+
+routines:
+  train:
+    nodes: [gpubox, minipc]   # or ["*"] for every online node
+    run: |
+      uv sync --frozen
+      uv run python train.py --shard $TF_NODE_INDEX/$TF_NODE_COUNT
+
+  eval:
+    nodes: [homelab]
+    run: |
+      uv run python eval.py > out/eval.txt
+```
+
+Then, from anywhere inside the project:
+
+```sh
+tailfleet run train            # push files, dispatch on gpubox + minipc
+tailfleet ps                   # routine × node: running / exit code / duration
+tailfleet logs train@gpubox -f # tail a routine's log (@node optional if single-node)
+tailfleet kill train          # TERM the routine's process group
+tailfleet pull                # fetch pull-globs back into the project
+tailfleet sync                # push only, no dispatch
+```
+
+### Semantics
+
+- `run` is executed as one `bash -e` script in the remote workspace, detached with `setsid`; it survives disconnects.
+- Injected environment: `TF_NODE`, `TF_ROUTINE`, `TF_NODE_INDEX`, `TF_NODE_COUNT` — free data parallelism across a routine's nodes.
+- A routine already running on a node refuses to start again; `kill` it first.
+- Sync is delete-free `rsync` in both directions; `push`/`pull` globs support `**`.
+- Remote layout: `~/.tailfleet/work/<workspace>/` mirrors pushed files; run state (`.sh`, `.pid`, `.start`, `.exit`, `.log`) lives in `.tf/` inside it.
+
+## Layout
+
+```
+tailfleet/
+  cli.py      argparse subcommands, entry point
+  monitor.py  Textual dashboard app
+  render.py   gauges, sparklines, ticker
+  nodes.py    tailnet discovery, remote exec
+  probes.py   shell probes piped to bash -s
+  parse.py    probe output parsing, parallel gather
+  config.py   tailfleet.yaml loading/validation
+  jobs.py     sync, dispatch, ps/logs/kill
+```
