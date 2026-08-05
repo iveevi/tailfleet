@@ -49,7 +49,7 @@ def monitor_probe_one(node, cache, timeout):
 
 
 def parse(text):
-    info, gstatic, gdyn = {}, [], []
+    info, gstatic, gdyn, jobs = {}, [], [], []
     for line in text.splitlines():
         if "\t" not in line:
             continue
@@ -67,6 +67,9 @@ def parse(text):
             d = parse_intel(v)
             if d:
                 gdyn.append(d)
+        elif k == "JOB":
+            name, _, secs = v.rpartition(" ")
+            jobs.append({"name": name or v, "secs": secs})
         elif k == "GPUTOP_B64":
             d = parse_gputop(v)
             if d:
@@ -75,6 +78,7 @@ def parse(text):
             info[k] = v
     info["GPU_STATIC"] = gstatic
     info["GPU_DYN"] = gdyn
+    info["JOBS"] = jobs
     return info
 
 

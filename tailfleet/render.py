@@ -139,12 +139,14 @@ def gauge_line(label, pct, detail, width):
     fill = 0 if p is None else round(p / 100 * barw)
     t.append("▰" * fill, style=band)
     t.append("▱" * (barw - fill), style="dim")
-    t.append(f"{_fmtpct(pct):>{PCT_W}}", style=f"bold {band}" if p is not None else "dim")
+    t.append(
+        f"{_fmtpct(pct):>{PCT_W}}", style=f"bold {band}" if p is not None else "dim"
+    )
     used = LABEL_W + barw + PCT_W
     if detail:
         room = width - used - 2
         if room >= 4:
-            d = detail if len(detail) <= room else detail[:room - 1] + "…"
+            d = detail if len(detail) <= room else detail[: room - 1] + "…"
             t.append(" " * (width - used - len(d)))
             t.append(d, style="dim")
     t.append("\n")
@@ -155,21 +157,26 @@ def _gpu_name(gpus):
     if not gpus:
         return "none", ""
     g = next((x for x in gpus if "util" in x), gpus[0])
-    stats = " · ".join(filter(None, [
-        f"{g['freq']}MHz" if "freq" in g else "",
-        f"{g['temp']}C" if "temp" in g else "",
-    ]))
+    stats = " · ".join(
+        filter(
+            None,
+            [
+                f"{g['freq']}MHz" if "freq" in g else "",
+                f"{g['temp']}C" if "temp" in g else "",
+            ],
+        )
+    )
     return gname(g), stats
 
 
 def _name_line(name, stats, width):
     if not stats:
-        return name if len(name) <= width else name[:max(1, width - 1)] + "…"
+        return name if len(name) <= width else name[: max(1, width - 1)] + "…"
     room = width - len(stats) - 3
     if room < 4:
         line = "· " + stats
-        return line if len(line) <= width else line[:max(1, width - 1)] + "…"
-    n = name if len(name) <= room else name[:room - 1] + "…"
+        return line if len(line) <= width else line[: max(1, width - 1)] + "…"
+    n = name if len(name) <= room else name[: room - 1] + "…"
     return f"{n} · {stats}"
 
 
@@ -177,7 +184,7 @@ def node_body(r, hist, width, section_h=6):
     t = Text()
 
     def clip(s):
-        return s if len(s) <= width else s[:max(1, width - 1)] + "…"
+        return s if len(s) <= width else s[: max(1, width - 1)] + "…"
 
     if r["status"] != "ok":
         t.append(clip(r.get("status") or "?") + "\n", style="red")
@@ -242,6 +249,12 @@ _COL_N = 9
 _COL_A = 40
 _COL_B = 22
 _COL_C = 46
+_FLOOR_N = 5
+_FLOOR_A = 18
+_FLOOR_B = 10
+_FLOOR_C = 22
+_CHROME = 13
+_GROW = (0.05, 0.42, 0.13, 0.40)
 _BORDER = "bright_black"
 _LABEL = "bright_black"
 _DIM = "bright_black"
@@ -249,7 +262,7 @@ _DIM = "bright_black"
 
 def _clip(s, w):
     s = str(s)
-    return s if len(s) <= w else s[:max(1, w - 1)] + "…"
+    return s if len(s) <= w else s[: max(1, w - 1)] + "…"
 
 
 def _mem_aligned(r):
@@ -298,10 +311,79 @@ def _bar(pct, w):
     return t
 
 
+_BAR_MIN = 4
+_BAR_MAX = 14
+
+
+def _cpu_cell(width, cu, ct, cores, clk):
+    # temp · util% · [bar] · cores · [clock]. When tight the clock drops, then
+    # the bar; the temp/util/core numbers are never clipped mid-value.
+    segs = [(ct.rjust(4), _LABEL), ("  ", ""), (_fmtpct(cu).rjust(4), _band(cu))]
+    remaining = width - (12 + len(cores))
+    if remaining - 2 >= _BAR_MIN:
+        bw = min(_BAR_MAX, remaining - 2)
+        segs += [("  ", ""), (_bar(cu, bw), None)]
+        remaining -= 2 + bw
+    segs += [("  ", ""), (cores, _LABEL)]
+    if clk and remaining >= len(clk):
+        segs += [(clk, _LABEL)]
+    return _cell(width, *segs)
+
+
+def _mem_cell(width, mp):
+    segs = [(_fmtpct(mp).rjust(4), _band(mp))]
+    if width - 6 >= _BAR_MIN:
+        bw = min(_BAR_MAX, width - 6)
+        segs += [("  ", ""), (_bar(mp, bw), None)]
+    return _cell(width, *segs)
+
+
+def _gpu_cell(width, temp, gu, vp, vram):
+    # temp · [bar] gu% · vram · [bar] vp%. Both bars drop together when tight.
+    tp, gp, vpp = temp.rjust(4), _fmtpct(gu).rjust(4), _fmtpct(vp).rjust(4)
+    leftover = width - (18 + len(vram))
+    if (leftover - 1) // 2 >= 3:
+        bw = min(10, (leftover - 1) // 2)
+        return _cell(
+            width,
+            (tp, _LABEL),
+            ("  ", ""),
+            (_bar(gu, bw), None),
+            (" ", ""),
+            (gp, _band(gu)),
+            ("  ", ""),
+            (vram, _LABEL),
+            (" ", ""),
+            (_bar(vp, bw), None),
+            (" ", ""),
+            (vpp, _band(vp)),
+        )
+    return _cell(
+        width,
+        (tp, _LABEL),
+        ("  ", ""),
+        (gp, _band(gu)),
+        ("  ", ""),
+        (vram, _LABEL),
+        ("  ", ""),
+        (vpp, _band(vp)),
+    )
+
+
 def _rule(left, mid, right, ch, cols):
     n, a, b, c = cols
-    return Text(left + ch * (n + 2) + mid + ch * (a + 2) + mid
-                + ch * (b + 2) + mid + ch * (c + 2) + right, style=_BORDER)
+    return Text(
+        left
+        + ch * (n + 2)
+        + mid
+        + ch * (a + 2)
+        + mid
+        + ch * (b + 2)
+        + mid
+        + ch * (c + 2)
+        + right,
+        style=_BORDER,
+    )
 
 
 def _row(cn, ca, cb, cc):
@@ -315,11 +397,23 @@ def _row(cn, ca, cb, cc):
 
 
 def _cols_for(width):
-    n, b = _COL_N, _COL_B
-    remaining = max(_COL_A + _COL_C, width - (n + b + 13))
-    a = max(_COL_A, int(remaining * 0.42))
-    c = max(_COL_C, remaining - a)
-    return n, a, b, c
+    ideal = (_COL_N, _COL_A, _COL_B, _COL_C)
+    floors = (_FLOOR_N, _FLOOR_A, _FLOOR_B, _FLOOR_C)
+    budget = max(sum(floors), width - _CHROME)
+    if budget >= sum(ideal):
+        # Wider than the natural layout: hand the surplus to every column
+        # (proportional to _GROW) so the table fills the terminal.
+        surplus = budget - sum(ideal)
+        cols = [ideal[i] + round(surplus * _GROW[i]) for i in range(4)]
+        cols[3] += budget - sum(cols)
+        return tuple(cols)
+    # Narrower than the natural layout: interpolate each column between its
+    # floor and its ideal so the table always fits the terminal.
+    span = sum(ideal) - sum(floors)
+    frac = (budget - sum(floors)) / span
+    cols = [round(f + (i - f) * frac) for f, i in zip(floors, ideal)]
+    cols[3] += budget - sum(cols)
+    return tuple(cols)
 
 
 def snapshot_text(results, width=116, interval=None):
@@ -349,14 +443,18 @@ def snapshot_text(results, width=116, interval=None):
         _rule("╭", "─", "╮", "─", cols),
         title,
         _rule("├", "┬", "┤", "─", cols),
-        _row(_cell(n, ("Node", _LABEL)),
-             _cell(ca, ("CPU", _LABEL)),
-             _cell(cb, ("Memory-Usage", _LABEL)),
-             _cell(cc, ("GPU   Name", _LABEL))),
-        _row(_cell(n, ("", _LABEL)),
-             _cell(ca, ("Temp   Util   Cores · Clock", _LABEL)),
-             _cell(cb, ("Used / Total", _LABEL)),
-             _cell(cc, ("Temp   GPU-Util · VRAM-Usage", _LABEL))),
+        _row(
+            _cell(n, ("Node", _LABEL)),
+            _cell(ca, ("CPU", _LABEL)),
+            _cell(cb, ("Memory-Usage", _LABEL)),
+            _cell(cc, ("GPU   Name", _LABEL)),
+        ),
+        _row(
+            _cell(n, ("", _LABEL)),
+            _cell(ca, ("Temp   Util   Cores · Clock", _LABEL)),
+            _cell(cb, ("Used / Total", _LABEL)),
+            _cell(cc, ("Temp   GPU-Util · VRAM-Usage", _LABEL)),
+        ),
         _rule("╞", "╪", "╡", "═", cols),
     ]
 
@@ -367,8 +465,14 @@ def snapshot_text(results, width=116, interval=None):
 
         if r["status"] != "ok":
             n1 = _node_cell(host, _DIM, is_self, n)
-            lines.append(_row(n1, _cell(ca, (_clip(r.get("status") or "?", ca), _DIM)),
-                              _cell(cb), _cell(cc)))
+            lines.append(
+                _row(
+                    n1,
+                    _cell(ca, (_clip(r.get("status") or "?", ca), _DIM)),
+                    _cell(cb),
+                    _cell(cc),
+                )
+            )
             lines.append(_row(_cell(n), _cell(ca), _cell(cb), _cell(cc)))
             if i < len(results) - 1:
                 lines.append(_rule("├", "┼", "┤", "─", cols))
@@ -386,21 +490,14 @@ def snapshot_text(results, width=116, interval=None):
         cu, gu = r.get("CPU_UTIL"), (g["util"] if g else None)
 
         ct = _cpu_temp(r)
-        cores = f"{str(r.get('CORES', '?')):>2}c/{str(r.get('THREADS', '?')):>2}t · {ghz(r):>6}"
+        cores = f"{str(r.get('CORES', '?')):>2}c/{str(r.get('THREADS', '?')):>2}t"
+        clk = f" · {ghz(r)}"
         a1 = _cell(ca, (_clip(_cpu_model(r), ca), "default"))
-        a2 = _cell(ca,
-                   (ct.rjust(4), _LABEL), ("  ", ""),
-                   (_fmtpct(cu).rjust(4), _band(cu)), ("  ", ""), *_seg_pair(_bar(cu, 8)),
-                   ("  ", ""), (cores, _LABEL))
+        a2 = _cpu_cell(ca, cu, ct, cores, clk)
         b1 = _cell(cb, (_mem_aligned(r), "default"))
-        b2 = _cell(cb, (_fmtpct(mem_pct(r)).rjust(4), _band(mem_pct(r))),
-                   ("  ", ""), *_seg_pair(_bar(mem_pct(r), 8)))
+        b2 = _mem_cell(cb, mem_pct(r))
         c1 = _cell(cc, (_clip(gm, cc), "default"))
-        c2 = _cell(cc,
-                   (temp.rjust(4), _LABEL), ("  ", ""),
-                   *_seg_pair(_bar(gu, 6)), (_fmtpct(gu).rjust(4), _band(gu)),
-                   ("  ", ""), (_vram_aligned(gv), _LABEL), (" ", ""),
-                   *_seg_pair(_bar(vp, 6)), (_fmtpct(vp).rjust(4), _band(vp)))
+        c2 = _gpu_cell(cc, temp, gu, vp, _vram_aligned(gv))
 
         lines.append(_row(n1, a1, b1, c1))
         lines.append(_row(n2, a2, b2, c2))
@@ -417,10 +514,6 @@ def snapshot_text(results, width=116, interval=None):
     return out
 
 
-def _seg_pair(text):
-    return [(text, None)]
-
-
 def _node_cell(host, name_style, is_self, width):
     t = Text()
     style = f"{name_style} italic" if is_self else name_style
@@ -434,4 +527,4 @@ def print_snapshot(results):
     from rich.console import Console
 
     con = Console(highlight=False)
-    con.print(snapshot_text(results, con.width), soft_wrap=True)
+    con.print(snapshot_text(results, con.width, interval=None), soft_wrap=True)

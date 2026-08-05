@@ -22,6 +22,22 @@ else
 fi
 """
 
+JOBS_PROBE = r"""
+shopt -s nullglob
+jnow=$(date +%s)
+for tf in "$HOME"/.tailfleet/work/*/.tf; do
+  ws=$(basename "$(dirname "$tf")")
+  for p in "$tf"/*.pid; do
+    r=$(basename "$p" .pid)
+    if pgrep -g "$(cat "$p")" >/dev/null 2>&1; then
+      s=$(cat "$tf/$r.start" 2>/dev/null || echo "")
+      emit JOB "$ws/$r ${s:+$((jnow-s))}"
+    fi
+  done
+done
+"""
+
+
 DYNAMIC_PROBE = r"""
 emit() { printf '%s\t%s\n' "$1" "$2"; }
 cpu_sample() { awk '/^cpu /{idle=$5+$6; tot=0; for(i=2;i<=NF;i++) tot+=$i; print tot, idle}' /proc/stat; }
@@ -63,6 +79,7 @@ elif lspci 2>/dev/null | grep -iE 'vga|3d|display' | grep -qi intel; then
     [ -n "$gt" ] && emit GPUTOP_B64 "$gt"
   fi
 fi
-"""
+""" + JOBS_PROBE
+
 
 PROBE = STATIC_PROBE + DYNAMIC_PROBE

@@ -1,6 +1,7 @@
 """Argument parsing and entry point."""
 
 import argparse
+import json
 import sys
 
 
@@ -15,10 +16,14 @@ def build_parser():
 
     t = sub.add_parser("status", help="one-shot fleet table (default)")
     t.add_argument("--timeout", type=float, default=20, help="per-node probe timeout seconds (default 20)")
+    t.add_argument("--json", action="store_true", help="emit the raw probe results as JSON")
 
     sub.add_parser("sync", help="push whitelisted files to all routine nodes")
     sub.add_parser("pull", help="fetch pull-globs back from all routine nodes")
     sub.add_parser("ps", help="show routine state across nodes")
+
+    j = sub.add_parser("jobs", help="show jobs running on every node, any workspace")
+    j.add_argument("-a", "--all", action="store_true", help="include exited and stale jobs")
 
     r = sub.add_parser("run", help="sync, then dispatch a routine on its nodes")
     r.add_argument("routine")
@@ -51,10 +56,18 @@ def main():
         nodes = sorted(all_nodes(), key=lambda n: (not n["self"], n["host"] or ""))
         results = sorted(gather_monitor(nodes, {}, args.timeout),
                          key=lambda r: (not r["self"], r["host"] or ""))
-        print_snapshot(results)
+        if args.json:
+            print(json.dumps(results))
+        else:
+            print_snapshot(results)
         return
 
     from . import jobs
+
+    if args.cmd == "jobs":
+        jobs.jobs(args.all)
+        return
+
     from .config import ConfigError, load_config
     try:
         cfg = load_config()

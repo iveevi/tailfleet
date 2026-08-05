@@ -231,6 +231,59 @@ def ps(cfg):
         print("no jobs")
 
 
+PS_ALL = r"""
+shopt -s nullglob
+now=$(date +%s)
+for tf in "$HOME"/@BASE@/*/.tf; do
+  ws=$(basename "$(dirname "$tf")")
+  for p in "$tf"/*.pid; do
+    r=$(basename "$p" .pid)
+    pg=$(cat "$p")
+    start=$(cat "$tf/$r.start" 2>/dev/null || echo "")
+    if pgrep -g "$pg" >/dev/null 2>&1; then
+      printf '%s\t%s\trunning\t-\t%s\n' "$ws" "$r" "${start:+$((now-start))}"
+    elif [ -f "$tf/$r.exit" ]; then
+      read -r code end < "$tf/$r.exit"
+      printf '%s\t%s\texited\t%s\t%s\n' "$ws" "$r" "$code" "${start:+$((end-start))}"
+    else
+      printf '%s\t%s\tstale\t-\t-\n' "$ws" "$r"
+    fi
+  done
+done
+true
+"""
+
+
+def jobs(show_all):
+    from rich.console import Console
+    from rich.table import Table
+
+    nodes = all_nodes()
+    script = _fill(PS_ALL, BASE=REMOTE_BASE)
+    with cf.ThreadPoolExecutor(max_workers=max(4, len(nodes))) as ex:
+        outs = list(ex.map(lambda n: (n, _exec(n, script, EXEC_TIMEOUT)), nodes))
+
+    table = Table(box=None, header_style="bold")
+    for col in ("node", "workspace", "routine", "state", "exit", "dur"):
+        table.add_column(col)
+    for node, r in outs:
+        for line in (r.stdout or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) != 5:
+                continue
+            ws, rt, state, code, dur = parts
+            if not show_all and state != "running":
+                continue
+            style = {"running": "green", "exited": "red" if code not in ("0", "-") else "dim",
+                     "stale": "yellow"}.get(state, "")
+            table.add_row(node["host"], ws, rt, f"[{style}]{state}[/]" if style else state,
+                          code, _dur(dur))
+    if table.row_count:
+        Console().print(table)
+    else:
+        print("no jobs running" if not show_all else "no jobs")
+
+
 def _logs_target(cfg, spec):
     if "@" in spec:
         name, host = spec.split("@", 1)

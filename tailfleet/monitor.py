@@ -51,8 +51,10 @@ class MonitorApp(App):
                 self.nodes = all_nodes()
                 self.last_disc = time.time()
                 self.static.clear()
-            results = sorted(gather_monitor(self.nodes, self.static, self.timeout),
-                             key=lambda r: (not r["self"], r["host"] or ""))
+            results = sorted(
+                gather_monitor(self.nodes, self.static, self.timeout),
+                key=lambda r: (not r["self"], r["host"] or ""),
+            )
         except Exception:
             results = None
         self.call_from_thread(self.after_refresh, results, time.time() - t0)
@@ -71,6 +73,7 @@ class MonitorApp(App):
     def render_table(self):
         if not self.results:
             return
-        width = min(self.size.width, 160)
+        width = self.size.width
         self.query_one("#table", Static).update(
-            snapshot_text(self.results, width, self.interval))
+            snapshot_text(self.results, width, self.interval)
+        )
