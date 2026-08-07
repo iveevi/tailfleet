@@ -27,6 +27,16 @@ def build_parser():
 
     r = sub.add_parser("run", help="sync, then dispatch a routine on its nodes")
     r.add_argument("routine")
+    r.add_argument("--wait", action="store_true", help="block until the routine exits everywhere")
+    r.add_argument("--timeout", type=float, help="seconds to wait before giving up")
+    r.add_argument("--poll", type=float, default=5, help="remote poll interval seconds (default 5)")
+    r.add_argument("--tail", type=int, default=0, help="print the last N log lines when it exits")
+
+    w = sub.add_parser("wait", help="block until a routine exits on every node")
+    w.add_argument("routine")
+    w.add_argument("--timeout", type=float, help="seconds to wait before giving up")
+    w.add_argument("--poll", type=float, default=5, help="remote poll interval seconds (default 5)")
+    w.add_argument("--tail", type=int, default=0, help="print the last N log lines when it exits")
 
     l = sub.add_parser("logs", help="tail a routine's log")
     l.add_argument("target", help="<routine> or <routine>@<node>")
@@ -79,6 +89,10 @@ def main():
             jobs.ps(cfg)
         elif args.cmd == "run":
             jobs.run_routine(cfg, args.routine)
+            if args.wait:
+                sys.exit(jobs.wait(cfg, args.routine, args.timeout, args.poll, args.tail))
+        elif args.cmd == "wait":
+            sys.exit(jobs.wait(cfg, args.routine, args.timeout, args.poll, args.tail))
         elif args.cmd == "logs":
             sys.exit(jobs.logs(cfg, args.target, args.follow, args.lines))
         elif args.cmd == "kill":

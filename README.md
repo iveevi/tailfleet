@@ -70,6 +70,8 @@ Then, from anywhere inside the project:
 
 ```sh
 tailfleet run train            # push files, dispatch on gpubox + minipc
+tailfleet run train --wait --tail 40   # dispatch, block until it exits, print the tail
+tailfleet wait train           # block on an already-running routine
 tailfleet ps                   # routine × node: running / exit code / duration
 tailfleet logs train@gpubox -f # tail a routine's log (@node optional if single-node)
 tailfleet kill train          # TERM the routine's process group
@@ -79,11 +81,14 @@ tailfleet sync                # push only, no dispatch
 
 ### Semantics
 
-- `run` is executed as one `bash -e` script in the remote workspace, detached with `setsid`; it survives disconnects.
+- `run` is executed as one `bash -eo pipefail` script in the remote workspace, detached with `setsid`; it survives disconnects. `pipefail` matters because a routine that pipes a test runner into `grep` would otherwise always report success, which silently defeats `wait`'s exit code.
 - Injected environment: `TF_NODE`, `TF_ROUTINE`, `TF_NODE_INDEX`, `TF_NODE_COUNT` — free data parallelism across a routine's nodes.
 - A routine already running on a node refuses to start again; `kill` it first.
 - Sync is delete-free `rsync` in both directions; `push`/`pull` globs support `**`.
 - Remote layout: `~/.tailfleet/work/<workspace>/` mirrors pushed files; run state (`.sh`, `.pid`, `.start`, `.exit`, `.log`) lives in `.tf/` inside it.
+- `wait` blocks *remotely*: one SSH per node runs `pgrep -g` in a loop and returns when the process group dies, rather than the client reconnecting on a timer. It emits a `.` per poll so a long silent run does not hit an SSH idle timeout.
+- `wait` exits `0` only if every node exited `0`; otherwise the first nonzero exit code, `124` on `--timeout`, `3` if the routine has no pid or left no exit marker. That makes `run --wait && next-step` safe in a script.
+- `wait` will not report a previous run's result: it compares the exit marker's timestamp against `.start` and keeps waiting if the marker is older, which covers the window between dispatch clearing `.exit` and the new process group appearing.
 
 ## Layout
 
@@ -96,5 +101,5 @@ tailfleet/
   probes.py   shell probes piped to bash -s
   parse.py    probe output parsing, parallel gather
   config.py   tailfleet.yaml loading/validation
-  jobs.py     sync, dispatch, ps/logs/kill
+  jobs.py     sync, dispatch, ps/logs/wait/kill
 ```

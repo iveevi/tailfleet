@@ -50,9 +50,11 @@ def routine_nodes(cfg, name):
 
 
 def all_config_nodes(cfg):
+    avail = {n["host"]: n for n in all_nodes()}
     seen, nodes = set(), []
     for r in cfg["routines"].values():
-        for n in resolve(r["nodes"]):
+        names = list(avail) if r["nodes"] == ["*"] else r["nodes"]
+        for n in (avail[h] for h in names if h in avail):
             if n["host"] not in seen:
                 seen.add(n["host"])
                 nodes.append(n)
@@ -156,7 +158,7 @@ echo $! >"$tf/@R@.pid"
 def run_routine(cfg, name):
     nodes = routine_nodes(cfg, name)
     push(cfg, nodes)
-    body = "set -e\n" + cfg["routines"][name]["run"]
+    body = "set -eo pipefail\n" + cfg["routines"][name]["run"]
     b64 = base64.b64encode(body.encode()).decode()
     for i, node in enumerate(nodes):
         script = _fill(DISPATCH, DIR=_remote_dir(cfg), R=name, B64=b64,
@@ -310,6 +312,66 @@ def logs(cfg, spec, follow=False, lines=120):
         return subprocess.call(["ssh", *SSH_OPTS, node["ip"], " ".join(["exec", *tail, f'"$HOME/{path}"'])])
     except KeyboardInterrupt:
         return 130
+
+
+WAIT = r"""
+tf="$HOME/@DIR@/.tf"
+for _ in $(seq 1 20); do [ -f "$tf/@R@.pid" ] && break; sleep 0.5; done
+[ -f "$tf/@R@.pid" ] || { echo missing; exit 3; }
+start=$(cat "$tf/@R@.start" 2>/dev/null || echo 0)
+for _ in $(seq 1 30); do
+  pg=$(cat "$tf/@R@.pid")
+  while pgrep -g "$pg" >/dev/null 2>&1; do echo .; sleep @POLL@; done
+  for _ in $(seq 1 10); do [ -f "$tf/@R@.exit" ] && break; sleep 0.5; done
+  if read -r code end < "$tf/@R@.exit" 2>/dev/null && [ "$end" -ge "$start" ]; then
+    echo "code $code"
+    exit 0
+  fi
+  sleep 1
+done
+echo stale
+exit 3
+"""
+
+
+def _wait_code(out):
+    for line in reversed((out or "").splitlines()):
+        if line.startswith("code "):
+            return int(line.split()[1])
+    return None
+
+
+def wait(cfg, name, timeout=None, poll=5, tail=0):
+    nodes = routine_nodes(cfg, name)
+    script = _fill(WAIT, DIR=_remote_dir(cfg), R=name, POLL=poll)
+
+    def watch(node):
+        try:
+            return node, _exec(node, script, timeout)
+        except subprocess.TimeoutExpired:
+            return node, None
+
+    with cf.ThreadPoolExecutor(max_workers=max(4, len(nodes))) as ex:
+        outs = list(ex.map(watch, nodes))
+
+    worst = 0
+    for node, r in outs:
+        if r is None:
+            print(f"wait {name}@{node['host']}: timed out", file=sys.stderr)
+            worst = worst or 124
+            continue
+        code = _wait_code(r.stdout)
+        if code is None:
+            reason = (r.stdout or "").strip().splitlines()[-1:] or ["no marker"]
+            print(f"wait {name}@{node['host']}: {reason[0]}", file=sys.stderr)
+            worst = worst or 3
+            continue
+        print(f"wait {name}@{node['host']}: {'ok' if code == 0 else f'exit {code}'}")
+        worst = worst or code
+
+    if tail:
+        logs(cfg, name, follow=False, lines=tail)
+    return worst
 
 
 KILL = r"""
