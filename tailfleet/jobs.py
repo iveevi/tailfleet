@@ -70,7 +70,44 @@ def expand_push(cfg):
     })
 
 
-def push(cfg, nodes):
+PRUNE = r"""
+set -e
+cd "$HOME/@DIR@" 2>/dev/null || exit 0
+mkdir -p .tf
+printf '%s' @B64@ | base64 -d | sort > .tf/manifest
+shopt -s globstar nullglob
+for f in @GLOBS@; do [ -f "$f" ] && printf '%s\n' "$f"; done | sort -u > .tf/present
+comm -23 .tf/present .tf/manifest > .tf/extra
+tr '\n' '\0' < .tf/extra | xargs -0 -r rm -f
+wc -l < .tf/extra
+"""
+
+
+def prunable_globs(cfg):
+    root = cfg["root"]
+    return [
+        g for g in cfg["push"]
+        if any((root / m).is_file() for m in glob.glob(g, root_dir=root, recursive=True))
+    ]
+
+
+def prune(cfg, nodes, files):
+    globs = prunable_globs(cfg)
+    skipped = [g for g in cfg["push"] if g not in globs]
+    if skipped:
+        print(f"prune: skipping {len(skipped)} glob(s) with no local match: {', '.join(skipped)}")
+    if not globs:
+        return
+    b64 = base64.b64encode(("\n".join(files) + "\n").encode()).decode()
+    script = _fill(PRUNE, DIR=_remote_dir(cfg), B64=b64, GLOBS=" ".join(globs))
+    for node in nodes:
+        r = _exec(node, script, EXEC_TIMEOUT)
+        if r.returncode != 0:
+            raise ConfigError(f"prune {node['host']}: {(r.stderr or '').strip() or 'failed'}")
+        print(f"prune {node['host']}: removed {(r.stdout or '0').strip() or '0'} stale files")
+
+
+def push(cfg, nodes, pruning=False):
     files = expand_push(cfg)
     if not files:
         print("push: no files matched", file=sys.stderr)
@@ -94,6 +131,9 @@ def push(cfg, nodes):
             print(f"push {node['host']}: {len(files)} files")
     finally:
         os.unlink(listfile)
+
+    if pruning:
+        prune(cfg, nodes, files)
 
 
 PULL_LIST = r"""
@@ -155,9 +195,9 @@ echo $! >"$tf/@R@.pid"
 """
 
 
-def run_routine(cfg, name):
+def run_routine(cfg, name, pruning=False):
     nodes = routine_nodes(cfg, name)
-    push(cfg, nodes)
+    push(cfg, nodes, pruning)
     body = "set -eo pipefail\n" + cfg["routines"][name]["run"]
     b64 = base64.b64encode(body.encode()).decode()
     for i, node in enumerate(nodes):

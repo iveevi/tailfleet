@@ -77,6 +77,7 @@ tailfleet logs train@gpubox -f # tail a routine's log (@node optional if single-
 tailfleet kill train          # TERM the routine's process group
 tailfleet pull                # fetch pull-globs back into the project
 tailfleet sync                # push only, no dispatch
+tailfleet sync --prune        # push, then delete remote files the globs no longer match
 ```
 
 ### Semantics
@@ -84,7 +85,21 @@ tailfleet sync                # push only, no dispatch
 - `run` is executed as one `bash -eo pipefail` script in the remote workspace, detached with `setsid`; it survives disconnects. `pipefail` matters because a routine that pipes a test runner into `grep` would otherwise always report success, which silently defeats `wait`'s exit code.
 - Injected environment: `TF_NODE`, `TF_ROUTINE`, `TF_NODE_INDEX`, `TF_NODE_COUNT` — free data parallelism across a routine's nodes.
 - A routine already running on a node refuses to start again; `kill` it first.
-- Sync is delete-free `rsync` in both directions; `push`/`pull` globs support `**`.
+- Sync is delete-free `rsync` in both directions; `push`/`pull` globs support `**`. Push expands its
+  globs locally and sends the result with `--files-from`, so the remote workspace is the **union of
+  every push ever made**: a file deleted from the repo, or one that stops matching a glob, stays on
+  the node forever. That is silent and it bites — a test runner walking a directory will happily
+  collect deleted test files and report failures that do not reproduce locally.
+- `--prune` on `sync` and `run` fixes that. It sends the same manifest push just used, re-expands the
+  push globs **remotely**, and deletes anything matching a glob that is not in the manifest.
+  `--files-from` cannot do this itself, hence the separate pass.
+- Two safeguards, both learned the hard way. Pruning is **scoped to the push globs**, never the whole
+  workspace, because a routine's `.venv`, its outputs and its `pull` artifacts all live there and a
+  whole-tree prune would delete them. And a glob that matches **nothing locally** is skipped, so an
+  optional or gitignored asset (a dataset symlinked into one checkout but not another) is not deleted
+  off the node just because you ran from the wrong worktree. The skipped globs are printed.
+- `--prune` is opt-in rather than the default: deleting remote files during a routine `run` is a
+  surprise the first time it removes something you wanted.
 - Remote layout: `~/.tailfleet/work/<workspace>/` mirrors pushed files; run state (`.sh`, `.pid`, `.start`, `.exit`, `.log`) lives in `.tf/` inside it.
 - `wait` blocks *remotely*: one SSH per node runs `pgrep -g` in a loop and returns when the process group dies, rather than the client reconnecting on a timer. It emits a `.` per poll so a long silent run does not hit an SSH idle timeout.
 - `wait` exits `0` only if every node exited `0`; otherwise the first nonzero exit code, `124` on `--timeout`, `3` if the routine has no pid or left no exit marker. That makes `run --wait && next-step` safe in a script.

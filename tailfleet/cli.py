@@ -18,7 +18,9 @@ def build_parser():
     t.add_argument("--timeout", type=float, default=20, help="per-node probe timeout seconds (default 20)")
     t.add_argument("--json", action="store_true", help="emit the raw probe results as JSON")
 
-    sub.add_parser("sync", help="push whitelisted files to all routine nodes")
+    y = sub.add_parser("sync", help="push whitelisted files to all routine nodes")
+    y.add_argument("--prune", action="store_true",
+                   help="also delete remote files the push globs no longer match")
     sub.add_parser("pull", help="fetch pull-globs back from all routine nodes")
     sub.add_parser("ps", help="show routine state across nodes")
 
@@ -27,6 +29,8 @@ def build_parser():
 
     r = sub.add_parser("run", help="sync, then dispatch a routine on its nodes")
     r.add_argument("routine")
+    r.add_argument("--prune", action="store_true",
+                   help="also delete remote files the push globs no longer match")
     r.add_argument("--wait", action="store_true", help="block until the routine exits everywhere")
     r.add_argument("--timeout", type=float, help="seconds to wait before giving up")
     r.add_argument("--poll", type=float, default=5, help="remote poll interval seconds (default 5)")
@@ -82,13 +86,13 @@ def main():
     try:
         cfg = load_config()
         if args.cmd == "sync":
-            jobs.push(cfg, jobs.all_config_nodes(cfg))
+            jobs.push(cfg, jobs.all_config_nodes(cfg), args.prune)
         elif args.cmd == "pull":
             jobs.pull(cfg, jobs.all_config_nodes(cfg))
         elif args.cmd == "ps":
             jobs.ps(cfg)
         elif args.cmd == "run":
-            jobs.run_routine(cfg, args.routine)
+            jobs.run_routine(cfg, args.routine, args.prune)
             if args.wait:
                 sys.exit(jobs.wait(cfg, args.routine, args.timeout, args.poll, args.tail))
         elif args.cmd == "wait":
