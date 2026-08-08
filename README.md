@@ -85,6 +85,14 @@ tailfleet sync --prune        # push, then delete remote files the globs no long
 - `run` is executed as one `bash -eo pipefail` script in the remote workspace, detached with `setsid`; it survives disconnects. `pipefail` matters because a routine that pipes a test runner into `grep` would otherwise always report success, which silently defeats `wait`'s exit code.
 - Injected environment: `TF_NODE`, `TF_ROUTINE`, `TF_NODE_INDEX`, `TF_NODE_COUNT` — free data parallelism across a routine's nodes.
 - A routine already running on a node refuses to start again; `kill` it first.
+- A workspace is keyed only by name, so two checkouts sharing a directory basename — or two sessions
+  driving the same repo — land in the same remote directory and quietly overwrite each other. Two
+  warnings mark that boundary rather than enforcing it. `push` stamps `.tf/owner` with
+  `user@host:/local/path` and warns when the previous stamp is somebody else's. `run` warns when a
+  *different* routine is live in the same workspace, since the per-routine pid guard above only
+  catches a collision under the same name, and routines that clean shared state (`rm -f` on goldens,
+  say) will corrupt each other's inputs mid-flight. Both are warnings, not refusals: sharing a
+  workspace on purpose is legitimate, and the failure it produces otherwise looks like a code bug.
 - Sync is delete-free `rsync` in both directions; `push`/`pull` globs support `**`. Push expands its
   globs locally and sends the result with `--files-from`, so the remote workspace is the **union of
   every push ever made**: a file deleted from the repo, or one that stops matching a glob, stays on

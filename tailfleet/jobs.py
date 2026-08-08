@@ -2,8 +2,11 @@
 
 import base64
 import concurrent.futures as cf
+import getpass
 import glob
 import os
+import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -107,11 +110,38 @@ def prune(cfg, nodes, files):
         print(f"prune {node['host']}: removed {(r.stdout or '0').strip() or '0'} stale files")
 
 
+OWNER = r"""
+tf="$HOME/@DIR@/.tf"
+mkdir -p "$tf"
+[ -f "$tf/owner" ] && cat "$tf/owner"
+printf '%s\n' @OWN@ > "$tf/owner"
+"""
+
+
+def owner():
+    return f"{getpass.getuser()}@{socket.gethostname()}:{os.getcwd()}"
+
+
+def claim(cfg, nodes):
+    mine = owner()
+    script = _fill(OWNER, DIR=_remote_dir(cfg), OWN=shlex.quote(mine))
+    for node in nodes:
+        theirs = (_exec(node, script, EXEC_TIMEOUT).stdout or "").strip()
+        if theirs and theirs != mine:
+            print(
+                f"warning: workspace '{cfg['workspace']}' on {node['host']} was last synced by "
+                f"{theirs}, not you; its files are about to be overwritten",
+                file=sys.stderr,
+            )
+
+
 def push(cfg, nodes, pruning=False):
     files = expand_push(cfg)
     if not files:
         print("push: no files matched", file=sys.stderr)
         return
+
+    claim(cfg, nodes)
     with tempfile.NamedTemporaryFile("w", suffix=".tfsync", delete=False) as f:
         f.write("\n".join(files) + "\n")
         listfile = f.name
@@ -185,6 +215,13 @@ if [ -f "$tf/@R@.pid" ] && pgrep -g "$(cat "$tf/@R@.pid")" >/dev/null 2>&1; then
   echo "already running (pgid $(cat "$tf/@R@.pid"))" >&2
   exit 3
 fi
+shopt -s nullglob
+for p in "$tf"/*.pid; do
+  o="${p##*/}"; o="${o%.pid}"
+  if [ "$o" != "@R@" ] && pgrep -g "$(cat "$p")" >/dev/null 2>&1; then
+    echo "warning: '$o' is already running in this workspace and shares its files" >&2
+  fi
+done
 printf '%s' @B64@ | base64 -d > "$tf/@R@.sh"
 rm -f "$tf/@R@.exit"
 date +%s > "$tf/@R@.start"
@@ -204,10 +241,13 @@ def run_routine(cfg, name, pruning=False):
         script = _fill(DISPATCH, DIR=_remote_dir(cfg), R=name, B64=b64,
                        HOST=node["host"], I=i, N=len(nodes))
         r = _exec(node, script, EXEC_TIMEOUT)
+        err = (r.stderr or "").strip()
         if r.returncode != 0:
-            err = (r.stderr or "").strip() or f"exit {r.returncode}"
-            print(f"run {name}@{node['host']}: {err}", file=sys.stderr)
+            print(f"run {name}@{node['host']}: {err or f'exit {r.returncode}'}", file=sys.stderr)
         else:
+            if err:
+                print(err, file=sys.stderr)
+
             print(f"run {name}@{node['host']}: started")
 
 
