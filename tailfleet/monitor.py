@@ -4,6 +4,7 @@ import time
 
 from textual import work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Center
 from textual.widgets import Static
 
@@ -18,7 +19,7 @@ class MonitorApp(App):
     #table { width: auto; height: auto; }
     """
     BINDINGS = [
-        ("q", "quit", "Quit"),
+        Binding("ctrl+c,q", "quit", "Quit", priority=True),
         ("minus,underscore", "rate(-1)", "Faster"),
         ("plus,equals_sign,equal", "rate(1)", "Slower"),
     ]
