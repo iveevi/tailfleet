@@ -49,6 +49,15 @@ def build_parser():
 
     k = sub.add_parser("kill", help="TERM a routine's process group on its nodes")
     k.add_argument("routine")
+
+    ls = sub.add_parser("lease", help="per-session node leases")
+    lsub = ls.add_subparsers(dest="lcmd")
+    lsub.add_parser("list", help="show who holds what (default)")
+    ltk = lsub.add_parser("take", help="lease a node for this session; no node lists leases")
+    ltk.add_argument("node", nargs="?")
+    lrel = lsub.add_parser("release", help="drop a lease (defaults to this session's)")
+    lrel.add_argument("node", nargs="?")
+    lsub.add_parser("hook", help="report this session's node, reading hook JSON on stdin")
     return ap
 
 
@@ -74,6 +83,21 @@ def main():
             print(json.dumps(results))
         else:
             print_snapshot(results)
+        return
+
+    if args.cmd == "lease":
+        from . import lease
+        if args.lcmd == "take":
+            if args.node:
+                lease.take(args.node)
+            else:
+                lease.show()
+        elif args.lcmd == "release":
+            lease.release(args.node)
+        elif args.lcmd == "hook":
+            lease.hook()
+        else:
+            lease.show()
         return
 
     from . import jobs

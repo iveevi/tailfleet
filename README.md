@@ -80,6 +80,39 @@ tailfleet sync                # push only, no dispatch
 tailfleet sync --prune        # push, then delete remote files the globs no longer match
 ```
 
+### Leases
+
+A node is reserved per Claude Code session, so parallel sessions stop landing on the same machine.
+Nothing is leased automatically — the human decides.
+
+```sh
+tailfleet lease                # who holds what, by session codename
+tailfleet lease take monoco    # lease a node for this session (what /lease runs)
+tailfleet lease release        # give it back (defaults to this session's)
+tailfleet lease hook           # report this session's node, reads hook JSON on stdin
+```
+
+Wire `lease hook` into a `UserPromptSubmit` hook in `~/.claude/settings.json` and every session is
+told its node — or told it has none — each turn:
+
+```json
+{ "type": "command",
+  "command": "uv run --project $HOME/tools/orion/tailfleet tailfleet lease hook 2>/dev/null || true" }
+```
+
+A lease is `~/.tailfleet/leases/<node>` holding the session id and a codename picked from a wordlist
+by hashing that id, probing to the next word if it collides with a live lease. The codename is what
+`status`, `monitor`, `lease list` and the statusline show, because a session has no human-readable
+name of its own and several sessions can share a working directory. A lease expires after 8h without
+a touch, so a session that dies never strands a node, and `take` refuses a node another session
+holds.
+
+Reassignment stays with the human: `~/.claude/commands/lease.md` makes `/lease` (no args: show;
+`/lease monoco`: take) run the CLI through a slash command's `!` bash prefix, so the shell runs it
+directly and the agent only sees the result. The shell has no access to the session id, so `lease
+hook` records `~/.tailfleet/sessions/<claude-pid>` and `take` walks its own `/proc` parent chain to
+find which session it belongs to — exact even when two sessions run in one directory.
+
 ### Semantics
 
 - `run` is executed as one `bash -eo pipefail` script in the remote workspace, detached with `setsid`; it survives disconnects. `pipefail` matters because a routine that pipes a test runner into `grep` would otherwise always report success, which silently defeats `wait`'s exit code.

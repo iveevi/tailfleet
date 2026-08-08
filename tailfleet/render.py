@@ -370,16 +370,61 @@ def _gpu_cell(width, temp, gu, vp, vram):
     )
 
 
-def _rule(left, mid, right, ch, cols):
+def _short_dur(secs):
+    try:
+        s = int(secs)
+    except (TypeError, ValueError):
+        return ""
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}"
+
+
+def _detail_text(lease, jobs, width):
+    t = Text()
+    if lease:
+        t.append("◆ ", style="yellow")
+        t.append(lease["name"], style="yellow")
+    else:
+        t.append("◇ free", style=_DIM)
+    for j in jobs:
+        t.append("   ")
+        t.append("▶ ", style="green")
+        t.append(_clip(j["name"], max(1, width - t.cell_len - 6)), style="default")
+        d = _short_dur(j.get("secs"))
+        if d:
+            t.append(f" {d}", style=_LABEL)
+    if t.cell_len > width:
+        t = Text(_clip(t.plain, width), style=_DIM)
+    if t.cell_len < width:
+        t.append(" " * (width - t.cell_len))
+    return t
+
+
+def _span_row(lease, jobs, cols):
+    n, ca, cb, cc = cols
+    t = Text()
+    t.append("│ ", style=_BORDER)
+    t.append(" " * n)
+    t.append(" │ ", style=_BORDER)
+    t.append_text(_detail_text(lease, jobs, ca + cb + cc + 6))
+    t.append(" │", style=_BORDER)
+    return t
+
+
+def _rule(left, mid, right, ch, cols, skip_first=False):
+    mids = mid if isinstance(mid, tuple) else (mid, mid, mid)
     n, a, b, c = cols
     return Text(
         left
-        + ch * (n + 2)
-        + mid
+        + (" " if skip_first else ch) * (n + 2)
+        + mids[0]
         + ch * (a + 2)
-        + mid
+        + mids[1]
         + ch * (b + 2)
-        + mid
+        + mids[2]
         + ch * (c + 2)
         + right,
         style=_BORDER,
@@ -417,6 +462,8 @@ def _cols_for(width):
 
 
 def snapshot_text(results, width=116, interval=None):
+    from .lease import leases
+    held = leases()
     ncolor, _ = palette_for([r["host"] for r in results])
     cols = _cols_for(width)
     n, ca, cb, cc = cols
@@ -458,6 +505,16 @@ def snapshot_text(results, width=116, interval=None):
         _rule("╞", "╪", "╡", "═", cols),
     ]
 
+    def close(i, host, jobs):
+        detail = held.get(host) or jobs
+        if detail:
+            lines.append(_rule("│", ("├", "┴", "┴"), "┤", "╌", cols, skip_first=True))
+            lines.append(_span_row(held.get(host), jobs, cols))
+        if i < len(results) - 1:
+            lines.append(_rule("├", ("┼", "┬", "┬") if detail else "┼", "┤", "─", cols))
+        else:
+            lines.append(_rule("╰", ("┴", "─", "─") if detail else "┴", "╯", "─", cols))
+
     for i, r in enumerate(results):
         host = r["host"] or "?"
         acc = ncolor.get(host, "white")
@@ -474,8 +531,7 @@ def snapshot_text(results, width=116, interval=None):
                 )
             )
             lines.append(_row(_cell(n), _cell(ca), _cell(cb), _cell(cc)))
-            if i < len(results) - 1:
-                lines.append(_rule("├", "┼", "┤", "─", cols))
+            close(i, host, [])
             continue
 
         n1 = _node_cell(host, f"bold {acc}", is_self, n)
@@ -501,10 +557,7 @@ def snapshot_text(results, width=116, interval=None):
 
         lines.append(_row(n1, a1, b1, c1))
         lines.append(_row(n2, a2, b2, c2))
-        if i < len(results) - 1:
-            lines.append(_rule("├", "┼", "┤", "─", cols))
-
-    lines.append(_rule("╰", "┴", "╯", "─", cols))
+        close(i, host, r.get("JOBS") or [])
 
     out = Text()
     for j, ln in enumerate(lines):
