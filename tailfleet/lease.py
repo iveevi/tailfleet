@@ -12,6 +12,7 @@ BASE = Path.home() / ".tailfleet"
 LEASE_DIR = BASE / "leases"
 SESSION_DIR = BASE / "sessions"
 TTL = 8 * 3600
+GRACE = 300
 
 WORDS = """
 amber anchor anvil arbor archer arrow ash aspen atlas aurora badger balsam banjo
@@ -38,6 +39,32 @@ def _sweep():
         for f in d.glob("*"):
             if f.is_file() and now - f.stat().st_mtime > TTL:
                 f.unlink(missing_ok=True)
+
+    live = set()
+    for f in SESSION_DIR.glob("*"):
+        if not f.is_file():
+            continue
+        parts = (f.read_text().strip().split("\n") + ["", ""])[:2]
+        boot = _boot_time(f.name)
+        if boot is not None and not parts[1]:
+            f.write_text(f"{parts[0]}\n{boot}\n")
+        if boot is not None and parts[1] in ("", boot):
+            live.add(parts[0])
+        else:
+            f.unlink(missing_ok=True)
+    for f in LEASE_DIR.glob("*"):
+        if (f.is_file() and f.read_text().strip().split("\n")[0] not in live
+                and now - f.stat().st_mtime > GRACE):
+            f.unlink(missing_ok=True)
+
+
+def _boot_time(pid):
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        comm = Path(f"/proc/{pid}/comm").read_text().strip()
+    except OSError:
+        return None
+    return stat.rsplit(")", 1)[1].split()[19] if comm == "claude" else None
 
 
 def codename(sid, taken=()):
@@ -85,7 +112,7 @@ def register(sid):
         except OSError:
             continue
         if comm == "claude":
-            (SESSION_DIR / pid).write_text(sid + "\n")
+            (SESSION_DIR / pid).write_text(f"{sid}\n{_boot_time(pid)}\n")
             return pid
     return None
 
@@ -95,7 +122,7 @@ def current_sid():
     for pid in _ancestors():
         f = SESSION_DIR / pid
         if f.is_file():
-            return f.read_text().strip()
+            return f.read_text().strip().split("\n")[0]
     return None
 
 
@@ -154,5 +181,6 @@ def hook():
               f"node until the user leases one with /lease <node>. Free right now: "
               f"{', '.join(free) or 'none'}.")
         return
+    (LEASE_DIR / host).touch()
     print(f"Your tailfleet node for this session: {host} (codename {leases()[host]['name']}). "
           f"Use only that node; never change a lease yourself — the user does that with /lease.")

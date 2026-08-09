@@ -88,7 +88,9 @@ def main():
     if args.cmd == "lease":
         from . import lease
         if args.lcmd == "take":
-            if args.node:
+            if args.node in ("release", "drop", "free", "none"):
+                lease.release()
+            elif args.node:
                 lease.take(args.node)
             else:
                 lease.show()
