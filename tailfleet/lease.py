@@ -53,9 +53,15 @@ def _sweep():
         else:
             f.unlink(missing_ok=True)
     for f in LEASE_DIR.glob("*"):
-        if (f.is_file() and f.read_text().strip().split("\n")[0] not in live
-                and now - f.stat().st_mtime > GRACE):
+        if not f.is_file():
+            continue
+        holder = f.read_text().strip().split("\n")[0]
+        if holder not in live and not provisional_live(holder) and now - f.stat().st_mtime > GRACE:
             f.unlink(missing_ok=True)
+
+
+def provisional_live(sid):
+    return sid.startswith("pid:") and _boot_time(sid[4:]) is not None
 
 
 def _boot_time(pid):
@@ -104,17 +110,29 @@ def _ancestors():
     return seen
 
 
-def register(sid):
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+def claude_ancestor():
     for pid in _ancestors():
         try:
             comm = Path(f"/proc/{pid}/comm").read_text().strip()
         except OSError:
             continue
         if comm == "claude":
-            (SESSION_DIR / pid).write_text(f"{sid}\n{_boot_time(pid)}\n")
             return pid
     return None
+
+
+def register(sid):
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    pid = claude_ancestor()
+    if pid:
+        (SESSION_DIR / pid).write_text(f"{sid}\n{_boot_time(pid)}\n")
+    return pid
+
+
+def reconcile(sid, pid):
+    for host, v in leases().items():
+        if v["sid"] == f"pid:{pid}":
+            (LEASE_DIR / host).write_text(f"{sid}\n{v['name']}\n")
 
 
 def current_sid():
@@ -123,7 +141,8 @@ def current_sid():
         f = SESSION_DIR / pid
         if f.is_file():
             return f.read_text().strip().split("\n")[0]
-    return None
+    pid = claude_ancestor()
+    return f"pid:{pid}" if pid else None
 
 
 def take(new):
@@ -173,7 +192,9 @@ def hook():
     except (json.JSONDecodeError, ValueError):
         payload = {}
     sid = payload.get("session_id") or "unknown"
-    register(sid)
+    pid = register(sid)
+    if pid:
+        reconcile(sid, pid)
     host = held_by(sid)
     if not host:
         free = [n["host"] for n in all_nodes() if n["host"] not in leases()]
